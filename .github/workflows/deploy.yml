@@ -1,0 +1,72 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time; a newer push waits for the running one.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Check Cloudflare credentials
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID as repository secrets (see README)."
+            exit 1
+          fi
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npx vite build
+
+      # Schema changes go in before the new code. On the very first deploy the
+      # database doesn't exist yet; Wrangler creates it during deploy and the
+      # step after deploy applies the migrations.
+      - name: Apply database migrations
+        run: npx wrangler d1 migrations apply DB --remote || echo "Database not created yet; migrations run after deploy."
+
+      - name: Write app secrets
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          OWNER_PASSWORD: ${{ secrets.OWNER_PASSWORD }}
+          MCP_API_KEY: ${{ secrets.MCP_API_KEY }}
+        run: |
+          node -e '
+            const out = {};
+            for (const k of ["APP_PASSWORD", "OWNER_PASSWORD", "MCP_API_KEY"]) if (process.env[k]) out[k] = process.env[k];
+            require("fs").writeFileSync(process.env.RUNNER_TEMP + "/secrets.json", JSON.stringify(out));
+            console.log("Secrets to upload:", Object.keys(out).join(", ") || "(none)");
+          '
+
+      - name: Deploy to Cloudflare
+        run: npx wrangler deploy --secrets-file "$RUNNER_TEMP/secrets.json"
+
+      - name: Apply database migrations (first deploy)
+        run: npx wrangler d1 migrations apply DB --remote
+
+      - name: Clean up
+        if: always()
+        run: rm -f "$RUNNER_TEMP/secrets.json"

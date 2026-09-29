@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local development (never commit .dev.vars)
+APP_PASSWORD=kitchen
+OWNER_PASSWORD=change-me-owner
+MCP_API_KEY=rmk_local_dev_key

@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "recipe-manager",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+
+  // The React app is built by Vite into static assets. Requests that don't match a
+  // file fall through to the Worker (API, MCP, OAuth, images) or to index.html (SPA routes).
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/mcp", "/mcp/*", "/img/*", "/authorize", "/oauth/*", "/.well-known/*", "/register"]
+  },
+
+  // D1 database and KV namespaces. No IDs are needed: Wrangler creates them on the
+  // first deploy (automatic resource provisioning) and reuses them afterwards.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "recipe-manager-db", "migrations_dir": "migrations" }
+  ],
+  "kv_namespaces": [
+    { "binding": "APP_KV" },
+    { "binding": "OAUTH_KV" }
+  ],
+
+  "vars": { "TIMEZONE": "America/Chicago" },
+  "observability": { "enabled": true }
+
+  // Secrets (set by the GitHub deploy workflow, or `npx wrangler secret put NAME`):
+  //   APP_PASSWORD    - household sign-in password for the website
+  //   OWNER_PASSWORD  - required to approve an AI agent's MCP connection (only you)
+  //   MCP_API_KEY     - optional static bearer key for agents that can't do OAuth
+}
