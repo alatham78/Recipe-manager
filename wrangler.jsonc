@@ -8,6 +8,7 @@
   // The React app is built by Vite into static assets. Requests that don't match a
   // file fall through to the Worker (API, MCP, OAuth, images) or to index.html (SPA routes).
   "assets": {
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*", "/mcp", "/mcp/*", "/img/*", "/authorize", "/oauth/*", "/.well-known/*", "/register"]
   },

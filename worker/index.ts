@@ -18,6 +18,10 @@ const appHandler = {
       if (!(await isAuthenticated(request, env))) return new Response("Unauthorized", { status: 401 });
       return getImage(env, decodeURIComponent(path.slice(5)));
     }
+    // Unknown protocol paths get a real 404 rather than the app's HTML.
+    if (path.startsWith("/.well-known/") || path.startsWith("/oauth/") || path.startsWith("/mcp") || path === "/register") {
+      return new Response(JSON.stringify({ error: "not_found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+    }
     // SPA and static files
     return env.ASSETS.fetch(request);
   },
@@ -70,6 +74,66 @@ export default {
       if (key && (await safeEqual(key, env.MCP_API_KEY))) return handleMcp(request, env);
     }
 
-    return providerFor(url.origin).fetch(request, env, ctx);
+    return providerFor(url.origin).fetch(await normalizeOAuthRequest(request, url), env, ctx);
   },
 } satisfies ExportedHandler<Env>;
+
+const SUPPORTED_SCOPES = new Set(["recipes", "offline_access"]);
+
+/**
+ * MCP clients differ in what they send as the OAuth `resource` (the site root, a trailing
+ * slash, the /mcp URL) and some ask for OpenID scopes this server doesn't issue. The OAuth
+ * library is strict about both, so map every spelling of this server to its one canonical
+ * resource and drop scopes it doesn't know before the library sees the request.
+ */
+async function normalizeOAuthRequest(request: Request, url: URL): Promise<Request> {
+  const origin = url.origin;
+  const canonical = `${origin}/mcp`;
+  const fixResource = (v: string) => {
+    const t = v.replace(/\/+$/, "");
+    return t === origin || t === canonical ? canonical : v;
+  };
+  const fixScope = (v: string) => {
+    const kept = v.split(/\s+/).filter((s) => SUPPORTED_SCOPES.has(s));
+    return kept.length ? kept.join(" ") : "recipes";
+  };
+  const fixParams = (p: URLSearchParams) => {
+    let changed = false;
+    const resources = p.getAll("resource");
+    if (resources.length) {
+      const fixed = [...new Set(resources.map(fixResource))];
+      if (fixed.join("\n") !== resources.join("\n")) {
+        p.delete("resource");
+        fixed.forEach((r) => p.append("resource", r));
+        changed = true;
+      }
+    }
+    const scope = p.get("scope");
+    if (scope != null) {
+      const s = fixScope(scope);
+      if (s !== scope) {
+        p.set("scope", s);
+        changed = true;
+      }
+    }
+    return changed;
+  };
+
+  // Root-level protected resource metadata (some clients look here first).
+  if (request.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
+    return new Request(`${origin}/.well-known/oauth-protected-resource/mcp`, request);
+  }
+  if (request.method === "GET" && url.pathname === "/authorize") {
+    const u = new URL(url);
+    if (fixParams(u.searchParams)) return new Request(u.toString(), request);
+  }
+  if (request.method === "POST" && url.pathname === "/oauth/token" && (request.headers.get("Content-Type") ?? "").includes("application/x-www-form-urlencoded")) {
+    const params = new URLSearchParams(await request.clone().text());
+    if (fixParams(params)) {
+      const headers = new Headers(request.headers);
+      headers.delete("Content-Length");
+      return new Request(request.url, { method: "POST", headers, body: params.toString() });
+    }
+  }
+  return request;
+}
