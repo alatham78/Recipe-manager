@@ -99,3 +99,46 @@ describe("aisles, more", () => {
     expect(merged.map((m) => m.name)).toEqual(["Onion"]);
   });
 });
+
+describe("step ingredients: crawfish queso", () => {
+  const ings = normalizeIngredients([
+    "Crawfish:",
+    "1 lb Louisiana crawfish tail meat, with the fat in the bag",
+    "3 Tbsp butter",
+    "½ yellow onion, fine dice",
+    "1 poblano, fine dice",
+    "3 garlic cloves, minced",
+    "1½ tsp Creole seasoning",
+    "Queso:",
+    "1 can (12 oz) evaporated milk",
+    "1 lb deli white American cheese, cubed",
+    "8 oz pepper jack, shredded",
+    "Milk, as needed to loosen",
+    "To finish:",
+    "Crystal hot sauce, to taste",
+    "2 green onions, sliced",
+  ]);
+  const names = (step: string) => ingredientsInStep(step, ings).map((i) => ings[i]!.item);
+
+  it("parses a can size after the unit", () => {
+    expect(ings[6]).toMatchObject({ qty: 1, unit: "can", item: "evaporated milk", note: "12 oz" });
+  });
+  it("matches garlic by name and the plain onion, not green onions", () => {
+    expect(names("Melt butter, sweat the onion and poblano until soft, then add the garlic for one minute. Add the crawfish tails with all their fat and the Creole seasoning; sauté 2–3 minutes just to heat through and coat. Set aside; don't overcook.")).toEqual([
+      "Louisiana crawfish tail meat", "butter", "yellow onion", "poblano", "garlic cloves", "Creole seasoning",
+    ]);
+  });
+  it("uses the modifier to pick between milks", () => {
+    expect(names("In the same pot over low heat, warm the evaporated milk and melt in the American cheese in stages, then the pepper jack.")).toEqual([
+      "evaporated milk", "deli white American cheese", "pepper jack",
+    ]);
+    expect(names("Fold the crawfish mixture back in, holding back a spoonful for the top. Loosen with milk if needed.")).toEqual([
+      "Louisiana crawfish tail meat", "Milk",
+    ]);
+  });
+  it("matches a brand name and the full name", () => {
+    expect(names("Finish with Crystal to taste, the reserved crawfish, and the green onions. Serve with sturdy chips or toasted French bread rounds.")).toEqual([
+      "Louisiana crawfish tail meat", "Crystal hot sauce", "green onions",
+    ]);
+  });
+});

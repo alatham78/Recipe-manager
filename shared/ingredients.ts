@@ -173,6 +173,12 @@ export function parseIngredient(line: string, section?: string | null): Ingredie
       }
     }
   }
+  // Size right after the unit: "1 can (12 oz) evaporated milk"
+  const unitParen = s.match(/^\(([^)]*)\)\s*/);
+  if (unitParen && unit) {
+    sizeNote = [sizeNote, unitParen[1]!.trim()].filter(Boolean).join(", ");
+    s = s.slice(unitParen[0].length);
+  }
   s = s.replace(/^of\s+/i, "");
 
   // Note: after first comma, or trailing parenthetical
@@ -359,36 +365,93 @@ export function detectTimers(text: string): DetectedTimer[] {
   return out;
 }
 
-const STOP = new Set(["fresh", "large", "small", "medium", "chopped", "minced", "diced", "ground", "whole", "dried", "sliced", "boneless", "skinless", "unsalted", "salted", "extra", "virgin", "light", "dark", "finely", "freshly", "optional", "and", "or", "the", "for", "into", "with"]);
+const STOP = new Set(["chopped", "minced", "diced", "sliced", "cubed", "shredded", "grated", "crushed", "peeled", "drained", "softened", "melted", "boneless", "skinless", "finely", "freshly", "roughly", "thinly", "optional", "and", "or", "the", "for", "into", "with", "plus", "about", "hot", "cold", "warm", "room", "temperature"]);
 
-function keyWords(item: string): string[] {
-  return item
-    .toLowerCase()
-    .replace(/[^a-z\s-]/g, " ")
-    .split(/[\s-]+/)
-    .filter((w) => w.length > 2 && !STOP.has(w));
+/** Descriptors that don't distinguish one ingredient from the default version of it. */
+const PLAIN = new Set(["fresh", "large", "small", "medium", "whole", "extra", "virgin", "light", "dark", "yellow", "white", "sweet", "kosher", "sea", "table", "deli", "louisiana", "homemade", "good", "quality", "plain", "regular", "block", "ground", "dried", "unsalted", "salted", "purpose", "all"]);
+
+/** Count words that name a form rather than the ingredient ("garlic cloves" is garlic). */
+const GENERIC = new Set(["clove", "leaf", "leave", "sprig", "stalk", "rib", "head", "bunch", "piece", "meat", "bag", "can", "jar", "package", "stick", "slice"]);
+
+function singular(w: string): string {
+  if (w.length <= 3 || w.endsWith("ss") || w.endsWith("us")) return w;
+  if (w.endsWith("ies")) return w.slice(0, -3) + "y";
+  if (w.endsWith("oes")) return w.slice(0, -2);
+  if (w.endsWith("ves")) return w.slice(0, -3) + "f";
+  if (w.endsWith("s")) return w.slice(0, -1);
+  return w;
 }
 
-/** Indices of ingredients that a step appears to mention. */
+function tokens(s: string): string[] {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[^a-z\s-]/g, " ")
+    .split(/[\s-]+/)
+    .filter(Boolean)
+    .map(singular);
+}
+
+function keyWords(item: string): string[] {
+  const ws = tokens(item).filter((w) => w.length > 2 && !STOP.has(w));
+  const named = ws.filter((w) => !GENERIC.has(w));
+  return named.length ? named : ws;
+}
+
+/**
+ * Indices of ingredients a step mentions. A step names an ingredient by its full name
+ * ("green onions"), by its head noun ("the onion"), or by a word only that ingredient has
+ * ("Crystal"). When several ingredients share the head noun, a modifier in the step decides
+ * ("evaporated milk"); with no modifier, the plain version wins ("the onion" is the yellow
+ * onion, not the green onions).
+ */
 export function ingredientsInStep(step: string, ingredients: Ingredient[]): number[] {
-  const text = " " + step.toLowerCase().replace(/[^a-z\s]/g, " ") + " ";
+  const words = tokens(step);
+  const textSet = new Set(words);
+  const text = ` ${words.join(" ")} `;
+  const kws = ingredients.map((i) => keyWords(i.item));
   const counts = new Map<string, number>();
-  const words = ingredients.map((i) => keyWords(i.item));
-  for (const ws of words) for (const w of new Set(ws)) counts.set(w, (counts.get(w) ?? 0) + 1);
-  const hits: number[] = [];
-  ingredients.forEach((ing, idx) => {
-    const ws = words[idx]!;
+  for (const ws of kws) for (const w of new Set(ws)) counts.set(w, (counts.get(w) ?? 0) + 1);
+
+  const hits = new Set<number>();
+  const byHead = new Map<string, number[]>();
+  kws.forEach((ws, i) => {
     if (!ws.length) return;
-    const full = ws.join(" ");
-    const has = (w: string) => text.includes(` ${w} `) || text.includes(` ${w}s `) || (w.endsWith("s") && text.includes(` ${w.slice(0, -1)} `));
-    if (text.includes(` ${full} `)) return void hits.push(idx);
-    // Head noun (last word) if it is distinctive among the ingredients
+    if (ws.length > 1 && text.includes(` ${ws.join(" ")} `)) hits.add(i);
     const head = ws[ws.length - 1]!;
-    if (has(head) && (counts.get(head) ?? 0) === 1) return void hits.push(idx);
-    // Or two keywords present
-    if (ws.length >= 2 && ws.filter(has).length >= 2) hits.push(idx);
+    byHead.set(head, [...(byHead.get(head) ?? []), i]);
   });
-  return hits;
+
+  for (const [head, cands] of byHead) {
+    if (!textSet.has(head) || cands.some((i) => hits.has(i))) continue;
+    if (cands.length === 1) {
+      hits.add(cands[0]!);
+      continue;
+    }
+    const modifiers = (i: number) => kws[i]!.slice(0, -1);
+    const named = cands.filter((i) => modifiers(i).some((m) => !PLAIN.has(m) && textSet.has(m)));
+    if (named.length) {
+      named.forEach((i) => hits.add(i));
+      continue;
+    }
+    const plain = cands.find((i) => modifiers(i).every((m) => PLAIN.has(m)));
+    if (plain != null) hits.add(plain);
+  }
+
+  // A word unique to one ingredient ("Crystal", "crawfish") identifies it on its own.
+  kws.forEach((ws, i) => {
+    if (hits.has(i)) return;
+    if (ws.some((w) => counts.get(w) === 1 && !PLAIN.has(w) && w.length > 3 && textSet.has(w) && !byHeadShared(w))) hits.add(i);
+  });
+
+  function byHeadShared(w: string) {
+    // A word that is another ingredient's head noun isn't unique evidence ("pepper" in "pepper jack" vs "black pepper").
+    return (byHead.get(w)?.length ?? 0) > 0;
+  }
+
+  return [...hits].sort((a, b) => a - b);
 }
 
 // ---------------------------------------------------------------------------
